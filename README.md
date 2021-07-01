@@ -1,2 +1,48 @@
 # nodered-pylontech-console-reader
 Node-RED flow and configuration to read details from Pylontech batteries via the console port
+
+Important: Messing with the console port on Pylontech batteries has the potential to irreversibly damage your devices. Use of this solution is completely at your own risk.
+
+My solar system uses a SunSynk inverter, which connects to my battery bank via a CAN cable connection. This provides a few minimal stats about my battery bank, but I wanted a way to read more detailed and individual stats for each of the batteries in the battery bank.
+
+A bit of research indicated that this is possible with the console port on the master battery of the battery bank. As my master battery is a Pylontech US2000C, it uses an RJ45 console cable. The older models use an RJ11 Console cable.
+
+At first, I purchased a UGreen USB to RJ45 Console Cable (https://www.takealot.com/ugreen-usb2-0-m-to-console-m-1-5m-cab-bk/PLID53646762). Based on the description, it seemed as if it would work (USB FTDI chip), but when I received it, I used various applications to try and get it to connect to the battery (BatteryView, Termite, PuTTY, etc), but with no success.
+
+I then purchased a USB to RJ45 Console cable from https://solar-assistant.io/shop/products/pylontech_usc. This cable worked with all the above-mentioned programs and was easily able to read the specifics of the batteries.
+
+One interesting phenomenon I ran into was that existing information on the console connection process indicates that one needs to first connect at a baud rate of 1200, send a hex string, then connect at 115200, and send another HEX string, which would then present the Pylon> prompt to enter the necessary commands. This was not the case for me. When I connected Node-RED via a serial connection node, it was immediately initiated at the Pylon> prompt. I'm not sure if this is because I first used the above-mentioned applications, and perhaps they entered the prompt mode for me already? But even so, after hard power-cycling the batteries, the prompt was still immediately initiated without injecting the HEX strings. Another theory of mine is that this is maybe a newer feature of the US2000C batteries, and older batteries may still require the needed HEX strings. For anyone running into that situation, you will need to modify my attached flow accordingly, and you will need to change the serial node BAUD rate on the fly, which can be done with msg.baudrate =
+
+The flow works as follows:
+![image](https://user-images.githubusercontent.com/53084642/124092290-fce76d80-da56-11eb-9851-6f2bc1f8bd83.png)
+
+pwr\n is sent to the pylon> prompt via Serial Node every 5 seconds.
+A table with all battery details is returned:
+
+        pwr
+
+        @
+
+        Power Volt   Curr   Tempr  Tlow   Thigh  Vlow   Vhigh  Base.St  Volt.St  Curr.St  Temp.St  Coulomb  Time                 B.V.St   B.T.St   MosTempr M.T.St  
+
+        1     50548  8910   25000  24200  25000  3368   3371   Charge   Normal   Normal   Normal   97%      2021-06-30 20:49:45  Normal   Normal  22700    Normal  
+
+        2     50597  10779  23000  23000  24000  3371   3376   Charge   Normal   Normal   Normal   97%      2021-06-30 20:49:44  Normal   Normal   -        -       
+
+        3     -      -      -      -      -      -      -      Absent   -        -        -        -        -                    -        -       
+
+        4     -      -      -      -      -      -      -      Absent   -        -        -        -        -                    -        -       
+
+        5     -      -      -      -      -      -      -      Absent   -        -        -        -        -                    -        -       
+
+        6     -      -      -      -      -      -      -      Absent   -        -        -        -...
+
+The table is parsed by first breaking it into rows, and then each row is broken up into an array.
+This array is then split and each array item converted into an MQTT message, as well as corresponding MQTT auto-discovery config for Home Assistant:
+![image](https://user-images.githubusercontent.com/53084642/124092468-2dc7a280-da57-11eb-9b24-6970ed0cbd79.png)
+
+![image](https://user-images.githubusercontent.com/53084642/124092535-41730900-da57-11eb-9207-24dcdae7926c.png)
+
+Complete Node-RED Flow:
+
+    [{"id":"c271dc99.a2a23","type":"tab","label":"PylonBatts","disabled":false,"info":""},{"id":"534f1600.21758c","type":"serial request","z":"c271dc99.a2a23","name":"Serial Interface","serial":"e6c39153.e8eab8","x":560,"y":80,"wires":[["d0d47ef0.12b47"]]},{"id":"2b15108f.07d73","type":"inject","z":"c271dc99.a2a23","name":"pwr - get  power data","props":[{"p":"payload"},{"p":"baudrate","v":"115200","vt":"str"}],"repeat":"5","crontab":"","once":false,"onceDelay":"5","topic":"","payload":"pwr","payloadType":"str","x":160,"y":80,"wires":[["284bf5fa.a70c7a"]]},{"id":"284bf5fa.a70c7a","type":"function","z":"c271dc99.a2a23","name":"add \\n","func":"msg.payload += \"\\n\";\nreturn msg;","outputs":1,"noerr":0,"initialize":"","finalize":"","libs":[],"x":370,"y":80,"wires":[["534f1600.21758c"]]},{"id":"d0d47ef0.12b47","type":"split","z":"c271dc99.a2a23","name":"Split into rows","splt":"\\n","spltType":"str","arraySplt":1,"arraySpltType":"len","stream":false,"addname":"","x":120,"y":180,"wires":[["c4db5c84.4de59"]]},{"id":"c4db5c84.4de59","type":"function","z":"c271dc99.a2a23","name":"Row to Array","func":"var a = msg.payload\nvar array = []\narray[0] = new Array(parseInt(a.toString().substr(0, 6)), \"BattID\", null, null)\narray[1] = new Array(parseInt(a.toString().substr(6, 7)) / 1000, \"Volt\", \"V\", \"voltage\", array[0][0])\narray[2] = new Array(parseInt(a.toString().substr(13, 7)) / 1000, \"Curr\", \"A\", \"current\", array[0][0])\narray[3] = new Array(parseInt(a.toString().substr(20, 7)) / 1000, \"Tempr\", \"°C\", \"temperature\", array[0][0])\narray[4] = new Array(parseInt(a.toString().substr(27, 7)) / 1000, \"Tlow\", \"°C\", \"temperature\", array[0][0])\narray[5] = new Array(parseInt(a.toString().substr(34, 7)) / 1000, \"Thigh\", \"°C\", \"temperature\", array[0][0])\narray[6] = new Array(parseInt(a.toString().substr(41, 7)) / 1000, \"Vlow\", \"V\", \"voltage\", array[0][0])\narray[7] = new Array(parseInt(a.toString().substr(48, 7)) / 1000, \"Vhigh\", \"V\", \"voltage\", array[0][0])\narray[8] = new Array(a.substr(55, 9).trim(), \"BaseSt\", null, null, array[0][0])\narray[9] = new Array(a.substr(64, 9).trim(), \"VoltSt\", null, null, array[0][0])\narray[10] = new Array(a.substr(73, 9).trim(), \"CurrSt\", null, null, array[0][0])\narray[11] = new Array(a.substr(82, 9).trim(), \"TempSt\", null, null, array[0][0])\narray[12] = new Array(parseInt(a.toString().substr(91, 9)), \"SOC\", \"%\", \"battery\", array[0][0])\n\nif (array[8][0] !== \"Absent\" && array[8][0] != \"\" && array[8][0] != \"Base.St\") {\n    msg.payload = array\n    return msg;\n}","outputs":1,"noerr":0,"initialize":"","finalize":"","libs":[],"x":310,"y":180,"wires":[["7e041b10.07a654"]]},{"id":"d442c756.ccf068","type":"function","z":"c271dc99.a2a23","name":"Assemble Config","func":"msg.topic = \"homeassistant/sensor/Pylontech\" + msg.deviceid + \"/\" + \"/\" + msg.shorttopic + \"/\" + \"config\";\nmsg.topic = msg.topic.replace(\"//\", \"/\");\nmsg.payload = {\n  \n  \"unit_of_measurement\": msg.unit,\n  \"device_class\": msg.deviceclass,\n  \"state_topic\": \"homeassistant/sensor/Pylontech\" + msg.deviceid + \"/\" + msg.shorttopic + \"/\" + \"value\",\n  \"name\": \"Pylontech\" + msg.deviceid + \"_\" + msg.shorttopic,\n  \"unique_id\": msg.shorttopic + msg.deviceid,\n  \"device\": {\n    \"identifiers\": [\n      \"Pylontech\"\n    ],\n    \"name\": msg.shorttopic,\n    \"model\": \"US2000C\",\n    \"manufacturer\": \"Pylontech\"\n  \n     }  \n}\nreturn msg;","outputs":1,"noerr":0,"initialize":"","finalize":"","libs":[],"x":890,"y":180,"wires":[["2c01b77b.70a258"]]},{"id":"7e041b10.07a654","type":"split","z":"c271dc99.a2a23","name":"Split Array","splt":"\\n","spltType":"str","arraySplt":1,"arraySpltType":"len","stream":false,"addname":"","x":490,"y":180,"wires":[["d6891ad0.039c28"]]},{"id":"d6891ad0.039c28","type":"function","z":"c271dc99.a2a23","name":"Assemble Value","func":"var v = msg.payload;\nif (v[1] != \"BattID\"){\n  msg.payload = v[0];\n  msg.shorttopic = v[1];\n  if (v[2] != null){\n  msg.unit = v[2]\n  }\n  if (v[3] != null){\n  msg.deviceclass = v[3]\n  }\n  msg.deviceid = v[4]\n  msg.topic = \"homeassistant/sensor/Pylontech\"+ msg.deviceid + \"/\" + \"/\" + msg.shorttopic + \"/\" + \"value\";\n  msg.topic = msg.topic.replace(\"//\", \"/\");\n  return msg;\n\n}","outputs":1,"noerr":0,"initialize":"","finalize":"","libs":[],"x":660,"y":180,"wires":[["d442c756.ccf068","2c01b77b.70a258"]]},{"id":"2c01b77b.70a258","type":"mqtt out","z":"c271dc99.a2a23","name":"","topic":"","qos":"","retain":"","respTopic":"","contentType":"","userProps":"","correl":"","expiry":"","broker":"f35ad748.1790a8","x":850,"y":280,"wires":[]},{"id":"e6c39153.e8eab8","type":"serial-port","serialport":"/dev/ttyUSB1","serialbaud":"1200","databits":"8","parity":"none","stopbits":"1","waitfor":"","dtr":"none","rts":"none","cts":"none","dsr":"none","newline":"1000","bin":"false","out":"interbyte","addchar":"","responsetimeout":"10000"},{"id":"f35ad748.1790a8","type":"mqtt-broker","name":"SunSynk","broker":"192.168.3.36","port":"1883","clientid":"","usetls":false,"compatmode":false,"protocolVersion":"4","keepalive":"60","cleansession":true,"birthTopic":"","birthQos":"0","birthPayload":"","birthMsg":{},"closeTopic":"","closeQos":"0","closePayload":"","closeMsg":{},"willTopic":"","willQos":"0","willPayload":"","willMsg":{},"sessionExpiry":""}]
